@@ -1,0 +1,72 @@
+---
+title: "IV（2SLS）估计应用R实现"
+author: "xuefliang"
+date: "August 19, 2017"
+output:
+  html_document: default
+  word_document: default
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(AER)
+library(corrplot) 
+```
+
+    学校教育的收益，始于Mincer（1958）的具有开创性的有关工资与学校教育相互联系的研究，已成为重要的理论和实证研究课题（学术界往往将工资的对数对受教育年限及其他控制变量进行的这类回归称之为Mincerian regression）。你可能对此感到不解，因为两者之间的实证性解释是学历提高个人的生产率。但是也有其他解释。例如，根据Spence工作市场的信号模型，教育是能力的信号，高学历的人挣高薪。虽然学历并没有提高个人的挣钱能力，但学历与工资之间是存在联系，原因是工资与教育等两个变量均受到第三个变量“能力”的影响。Griliches（1976）采用工具变量法对遗漏变量问题进行了校正。本例子来源于Griliches, Z., 1976, "Wages of Very Young Men", Journal of Plitical Economy,84,pp.69-85.
+
+数据：grilic.dta
+变量：lw（工资对数），s（受教育年限），age（年龄），exper（工作经验），tenure（在单位的工作年数）、IQ（智商），mrt（母亲的受教育年限），kww（在"knowledge of the World of Work"测试中的成绩），mrt（婚姻虚拟变量，已婚=1），rns（美国南方虚拟变量，住在南方=1），smsa（大城市虚拟变量，住在大城市=1）
+
+IV估计的步骤：
+（一）做普通最小二乘法OLS估计，看看是否存在回归结果的不可靠性，然后初始怀疑存在内生性问题。具体细分两步：
+打开数据文件,简单描述性统计分析,简单双变量相关分析，Pearson相关分析，怀疑遗漏变量iq，考察智商与受教育年限的相关关系
+```{r}
+grilic <- read_excel("./grilic.xls")
+corrplot(cor(grilic), method = "circle")
+cor.test(grilic$IQ,grilic$S)
+```
+1、做一个参照系方程，即不含所怀疑的内生变量的方程进行OLS回归。
+作为一个参照系，先进行OLS回归，并使用稳健标准误，其中参数r是稳健推断（Robust Inference, 文献中也用HC，Heterogeneity Consistency），用于解决异方差问题（White, 1982）
+```{r}
+fit.lm1 <- lm(LW~S+EXPR+TENURE+RNS+SMSA,data = grilic)
+summary(fit.lm1)
+```
+
+回归结果显示，教育投资的年回报率为10.26%，而且在1%的水平上显著的不为零。这意味着，多受一年教育，则未来的工资将高出10.26%，这个教育投资回报率似乎太高了。可能的原因，由于遗漏变量“能力”与受教育年限正相关，故“能力”对工资的贡献也被纳入教育的贡献，因此高估了教育的回报率。
+
+2、引入所怀疑的内生变量在进行OLS回归。
+引入智商IQ作为“能力”的代理变量，再进行OLS回归。
+```{r}
+fit.lm2 <- lm(LW~S+IQ+EXPR+TENURE+RNS+SMSA,data = grilic)
+summary(fit.lm2)
+```
+
+加入“能力”的代理变量IQ后，教育投资的回报率下降为9.28%，变得更为合理些，但仍然显得过高。
+
+
+（二）选择工具变量，一般源于以往文献中相应与内生变量有关、但未引入研究的方程里的变量。具体细分为两步：
+1、初始工具变量的检测
+由于IQ来度量能力存在“测量误差”，故IQ是内生变量，考虑使用变量（med,kww,mrt,age)作为IQ的工具变量，进行2SLS回归，并使用稳健标准误差。
+```{r}
+iv1 = ivreg(LW~IQ+S+EXPR+TENURE+RNS+SMSA | S+EXPR+TENURE+RNS+SMSA+MED+KWW+MRT+AGE,data = grilic)
+summary(iv1, vcov = sandwich, diagnostics = TRUE)
+```
+在此2SLS回归中，教育回报率反而上升到13.73%，而IQ对工资的贡献居然为负，似乎并不可信。使用工具变量法的前提是工具变量的外生性。为此，进行过度识别检验，考察是否所有工具变量均外生，即与扰动项不相关。过度识别检验：Hansen-Sargan J检验，自身为一种卡方检验，原假设：所有工具变量均为外生，备选假设：至少有一个内生（存在不合格工具变量）。应接受原假设，拒绝备选假设。结果强烈拒绝“所有变量均为外生”的原假设，即认为某些（或某个）工具变量不合格（invalid）。
+2、对工具变量进一步选取检测
+考虑仅使用变量（med,kww）作为IQ的工具变量，再进行2SLS回归，同时显示第一阶段回归结果。
+```{r}
+iv2 = ivreg(LW~IQ+S+EXPR+TENURE+RNS+SMSA | S+EXPR+TENURE+RNS+SMSA+MED+KWW,data = grilic)
+summary(iv2, vcov = sandwich, diagnostics = TRUE)
+```
+
+结果显示，教育投资回报率降为6.08%，比较合理；而且IQ的贡献也重新变为正。继续做过度识别检验。
+estat overid
+接受原假设，认为（med,kww）外生。
+
+（三）考察工具的相关性，即弱工具变量判断（Stock and Yogo, 2005），使用拇指法则（Rule of Thumb，又叫“经验法则”，是一种可用于许多情况的简单的，经验性的，探索性的但不是很准确的原则。），检验内生变量和工具变量的相关性，也即检验研究模型的回归系数bIV极限分布是否是正态分布，是否会扭曲相应统计量的一致性，构造F统计量，如果F值>10，不是弱工具变量。
+
+（四）外生性检验——Durbin-Wu Hausman检验，原假设：OLS和IV无系统差异，备选假设：有差异（存在内生性，意味着用2sls是有效的），应拒绝原假设。用以检测IV是否优于OLS。
